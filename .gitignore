@@ -27,3 +27,5 @@
 
 # IntelliJ
 /out/
+
+/target/
