@@ -6,7 +6,10 @@ import org.apache.logging.log4j.Logger;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /*
@@ -28,6 +31,7 @@ public class AddressCache {
     private final long EXPIRATION;
     private final LinkedHashMap<InetAddress, CacheEntry> innerStorage;
     private final ReentrantReadWriteLock lock;
+    private final Condition takeCondition;
     private final ScheduledExecutorService invalidatingService;
     private final ScheduledExecutorService cleaningService;
 
@@ -38,6 +42,7 @@ public class AddressCache {
         this.EXPIRATION = unit.toMillis(maxAge);
         this.innerStorage = new LinkedHashMap<>();
         this.lock = new ReentrantReadWriteLock();
+        this.takeCondition = this.lock.writeLock().newCondition();
 
         CacheCleaner cleaner = new CacheCleaner(this.lock, this.innerStorage);
         CacheValidator validator = new CacheValidator(this.lock, this.innerStorage);
@@ -82,6 +87,7 @@ public class AddressCache {
                             //update expiration for existing but expired entry
                             innerStorage.get(address).setExpiration(newExpiration);
                         }
+
                         result = true;
                         log.debug("address " + address + " was added to cache");
                     } else { //case when storage contains entry and it is not expired
@@ -90,8 +96,10 @@ public class AddressCache {
                     //downgrade to read lock
                     lock.readLock().lock();
                 } finally {
-                    lock.writeLock().unlock();
+                    //notify take() if entry was added
+                    if (result) takeCondition.signal();
 
+                    lock.writeLock().unlock();
                 }
             } else {
                 log.debug("address " + address + " is already in cache");
@@ -179,36 +187,49 @@ public class AddressCache {
      *
      * @return
      */
+    @SuppressWarnings("Duplicates")
     public InetAddress take() {
         InetAddress result = null;
 
         lock.readLock().lock();
         try {
-            //maybe the second condition is not a good idea here..
+            //if there is no entries in the cache
             if (innerStorage.isEmpty() || getFirstValidEntry(innerStorage) == null) {
-                log.debug("cache is empty");
-            } else {
-                //unlock read lock before acquiring write lock
-                lock.readLock().unlock();
-                //there some other thread may change entry state
-                lock.writeLock().lock();
-                try {
-                    InetAddress key = getFirstValidEntry(innerStorage);
-                    //double check
-                    if (innerStorage.isEmpty() || key == null) {
-                        log.debug("cache is empty");
-                    } else {
-                        result = innerStorage.remove(key).getInetAddress();
-                        log.debug("taken address " + result + " was removed from the cache");
-                    }
-                    //downgrade to read lock
-                    lock.readLock().lock();
-                } finally {
-                    lock.writeLock().unlock();
-                }
+                result = innerTakeRoutine();
+            } else { //case when entries were found
+                result = innerTakeRoutine();
             }
         } finally {
             lock.readLock().unlock();
+        }
+
+        return result;
+    }
+
+    /**
+     * checks for entries, waits and removes first not expired entry of the cache
+     * runs after checking on read lock level
+     *
+     * @return first valid entry of the cache
+     */
+    private InetAddress innerTakeRoutine() {
+        InetAddress result = null;
+
+        lock.readLock().unlock();
+        lock.writeLock().lock();
+        try {
+            //check if there is no entries in the cache
+            if (innerStorage.isEmpty() || getFirstValidEntry(innerStorage) == null) {
+                takeCondition.await();
+            }
+            result = innerStorage.remove(getFirstValidEntry(innerStorage)).getInetAddress();
+            log.debug("taken address " + result + " was removed from the cache");
+            //downgrade lock
+            lock.readLock().lock();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.writeLock().unlock();
         }
 
         return result;
@@ -342,9 +363,16 @@ public class AddressCache {
 
     public static void main(String[] args) throws UnknownHostException, InterruptedException {
         final AddressCache cache = new AddressCache(1L, TimeUnit.SECONDS);
-        InetAddress sample = InetAddress.getByName("www.agoda.com");
 
-        List<InetAddress> sampleList = Arrays.asList(
+        final long writerDelay = 1000L;
+        final long peekerDelay = 2000L;
+        final long takerDelay = 3000L;
+        final long removerDelay = 3000L;
+
+        InetAddress sample = InetAddress.getByName("www.agoda.com");
+        Random generator = new Random();
+
+        final List<InetAddress> sampleList = Arrays.asList(
                 InetAddress.getByName("www.agoda.com"),
                 InetAddress.getByName("www.google.com"),
                 InetAddress.getByName("www.yandex.ru"),
@@ -359,14 +387,62 @@ public class AddressCache {
                 InetAddress.getByName("www.wikipedia.org")
         );
 
-        ScheduledExecutorService writerService = Executors.newScheduledThreadPool(1);
-        ScheduledExecutorService readerService = Executors.newScheduledThreadPool(1);
+        ScheduledExecutorService writerService = Executors.newScheduledThreadPool(2);
+        ScheduledExecutorService peekerService = Executors.newScheduledThreadPool(2);
+        ScheduledExecutorService takerService = Executors.newScheduledThreadPool(2);
+        ScheduledExecutorService removerService = Executors.newScheduledThreadPool(2);
 
-        writerService.scheduleWithFixedDelay((Runnable) () -> cache.add(sample), 0L, 2000L, TimeUnit.MILLISECONDS);
-        readerService.scheduleWithFixedDelay((Runnable) () -> System.out.println(cache.peek()), 500L, 1000L, TimeUnit.MILLISECONDS);
+
+        writerService.scheduleWithFixedDelay((Runnable) () -> {
+            InetAddress address = sampleList.get(generator.nextInt(sampleList.size()));
+            System.out.println(
+                    "writer "
+                            + Thread.currentThread().getId()
+                            + " writes address "
+                            + address
+                            + " result: "
+                            + cache.add(address));
+        }, 0L, writerDelay, TimeUnit.MILLISECONDS);
+
+        peekerService.scheduleWithFixedDelay((Runnable) () -> System.out.println(
+                "peeker "
+                        + Thread.currentThread().getId()
+                        + " peeks " + cache.peek()
+        ), 0L, peekerDelay, TimeUnit.MILLISECONDS);
+
+        takerService.scheduleWithFixedDelay((Runnable) () -> System.out.println(
+                "taker "
+                        + Thread.currentThread().getId()
+                        + " takes " + cache.take()
+        ), 0L, takerDelay, TimeUnit.MILLISECONDS);
+
+        removerService.scheduleWithFixedDelay((Runnable) () -> {
+                    InetAddress address = sampleList.get(generator.nextInt(sampleList.size()));
+                    System.out.println(
+                            "remover " +
+                                    +Thread.currentThread().getId()
+                                    + " removes address "
+                                    + address
+                                    + " result: "
+                                    + cache.remove(address)
+                    );
+                }, 0L, removerDelay, TimeUnit.MILLISECONDS
+        );
 
         Thread.sleep(10000);
+
+        peekerService.shutdownNow();
+        takerService.shutdownNow();
+        removerService.shutdownNow();
+
+
+        Thread.sleep(500);
         writerService.shutdownNow();
-        readerService.shutdownNow();
+
+        Thread.sleep(500);
+        System.out.println(peekerService.isShutdown());
+        System.out.println(writerService.isShutdown());
+        System.out.println(takerService.isShutdown());
+        System.out.println(removerService.isShutdown());
     }
 }
