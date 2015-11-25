@@ -256,6 +256,11 @@ public class AddressCache {
         invalidatingService.shutdownNow();
     }
 
+    /**
+     * Cache entry class, contains value, expiration time in ms and flag whether this entry valid or not
+     *
+     * invalid entries is available for being cleaned by ${@link CacheCleaner}
+     */
     static class CacheEntry {
         private final InetAddress inetAddress;
         private long expiration;
@@ -289,6 +294,12 @@ public class AddressCache {
         }
     }
 
+    /**
+     * Cache cleaner is responsible for deleting expired (invalid) cache entries
+     *
+     * It is executed with the fixed delay by ${@link #cleaningService}
+     * with predefined delay ${@link #CLEANING_INTERVAL}
+     */
     static class CacheCleaner implements Runnable {
 
         private ReentrantReadWriteLock lock;
@@ -336,6 +347,12 @@ public class AddressCache {
         }
     }
 
+    /**
+     * Cache validator is responsible for checking cache entries whether they are expired or not
+     *
+     * It is executed with the fixed delay by ${@link #invalidatingService}
+     * with predefined delay ${@link #INVALIDATING_INTERVAL}
+     */
     static class CacheValidator implements Runnable {
 
         private ReentrantReadWriteLock lock;
