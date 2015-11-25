@@ -187,7 +187,6 @@ public class AddressCache {
      *
      * @return
      */
-    @SuppressWarnings("Duplicates")
     public InetAddress take() {
         InetAddress result = null;
 
@@ -318,7 +317,6 @@ public class AddressCache {
         private void clean(Map<InetAddress, CacheEntry> storage) {
             if (storage == null || storage.isEmpty()) return;
 
-            long now = System.currentTimeMillis();
             int deletedCount = 0;
 
             Iterator<Map.Entry<InetAddress, CacheEntry>> it = storage.entrySet().iterator();
@@ -327,7 +325,7 @@ public class AddressCache {
             while (it.hasNext()) {
                 Map.Entry<InetAddress, CacheEntry> entry = it.next();
 
-                //remove cache entry if expiration time is lesser than current time
+                //remove invalid cache entry
                 if (!entry.getValue().isValid()) {
                     it.remove();
                     deletedCount++;
@@ -359,90 +357,5 @@ public class AddressCache {
                 lock.writeLock().unlock();
             }
         }
-    }
-
-    public static void main(String[] args) throws UnknownHostException, InterruptedException {
-        final AddressCache cache = new AddressCache(1L, TimeUnit.SECONDS);
-
-        final long writerDelay = 1000L;
-        final long peekerDelay = 2000L;
-        final long takerDelay = 3000L;
-        final long removerDelay = 3000L;
-
-        InetAddress sample = InetAddress.getByName("www.agoda.com");
-        Random generator = new Random();
-
-        final List<InetAddress> sampleList = Arrays.asList(
-                InetAddress.getByName("www.agoda.com"),
-                InetAddress.getByName("www.google.com"),
-                InetAddress.getByName("www.yandex.ru"),
-                InetAddress.getByName("www.facebook.com"),
-                InetAddress.getByName("www.bbc.com"),
-                InetAddress.getByName("www.vk.com"),
-                InetAddress.getByName("www.ya.ru"),
-                InetAddress.getByName("www.ringcentral.com"),
-                InetAddress.getByName("www.yahoo.com"),
-                InetAddress.getByName("www.ebay.com"),
-                InetAddress.getByName("www.steam.com"),
-                InetAddress.getByName("www.wikipedia.org")
-        );
-
-        ScheduledExecutorService writerService = Executors.newScheduledThreadPool(2);
-        ScheduledExecutorService peekerService = Executors.newScheduledThreadPool(2);
-        ScheduledExecutorService takerService = Executors.newScheduledThreadPool(2);
-        ScheduledExecutorService removerService = Executors.newScheduledThreadPool(2);
-
-
-        writerService.scheduleWithFixedDelay((Runnable) () -> {
-            InetAddress address = sampleList.get(generator.nextInt(sampleList.size()));
-            System.out.println(
-                    "writer "
-                            + Thread.currentThread().getId()
-                            + " writes address "
-                            + address
-                            + " result: "
-                            + cache.add(address));
-        }, 0L, writerDelay, TimeUnit.MILLISECONDS);
-
-        peekerService.scheduleWithFixedDelay((Runnable) () -> System.out.println(
-                "peeker "
-                        + Thread.currentThread().getId()
-                        + " peeks " + cache.peek()
-        ), 0L, peekerDelay, TimeUnit.MILLISECONDS);
-
-        takerService.scheduleWithFixedDelay((Runnable) () -> System.out.println(
-                "taker "
-                        + Thread.currentThread().getId()
-                        + " takes " + cache.take()
-        ), 0L, takerDelay, TimeUnit.MILLISECONDS);
-
-        removerService.scheduleWithFixedDelay((Runnable) () -> {
-                    InetAddress address = sampleList.get(generator.nextInt(sampleList.size()));
-                    System.out.println(
-                            "remover " +
-                                    +Thread.currentThread().getId()
-                                    + " removes address "
-                                    + address
-                                    + " result: "
-                                    + cache.remove(address)
-                    );
-                }, 0L, removerDelay, TimeUnit.MILLISECONDS
-        );
-
-        Thread.sleep(10000);
-
-        peekerService.shutdownNow();
-        takerService.shutdownNow();
-        removerService.shutdownNow();
-
-
-        Thread.sleep(500);
-        writerService.shutdownNow();
-
-        Thread.sleep(500);
-        System.out.println(peekerService.isShutdown());
-        System.out.println(writerService.isShutdown());
-        System.out.println(takerService.isShutdown());
-        System.out.println(removerService.isShutdown());
     }
 }
