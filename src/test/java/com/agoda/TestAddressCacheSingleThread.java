@@ -1,24 +1,22 @@
 package com.agoda;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.concurrent.TimeUnit;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
 import static org.hamcrest.core.IsEqual.equalTo;
-import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertThat;
 
 /**
  *
  * Created by Andrey Kapitonov on 24.11.2015.
  */
-public class TestAddressCache {
+public class TestAddressCacheSingleThread {
 
     private AddressCache cache;
     private InetAddress sample1;
@@ -28,6 +26,12 @@ public class TestAddressCache {
     public void setUp() throws Exception {
         cache = new AddressCache(1L, TimeUnit.SECONDS);
         sample1 = InetAddress.getByName("www.agoda.com");
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        cache = null;
+        System.gc();
     }
 
     @Test
